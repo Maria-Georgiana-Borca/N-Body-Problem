@@ -1,0 +1,11 @@
+# CLion / JetBrains
+.idea/
+
+# CMake
+cmake-build-*/
+
+# Build output
+build/
+
+# OS
+.DS_Store
