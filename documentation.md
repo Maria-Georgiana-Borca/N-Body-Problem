@@ -111,3 +111,82 @@ Each process updates only its own subset of bodies, eliminating write conflicts 
 
 No additional synchronization primitives are required. The combination of data partitioning and collective communication ensures correctness while keeping synchronization overhead minimal.
 
+## Performance Measurements
+
+### Experimental setup
+
+All experiments were executed on the same machine using identical simulation parameters for all implementations. The following parameters were fixed across all runs:
+
+* Time step: `dt = 0.01`
+* Softening factor: `ε = 0.001`
+* Gravitational constant: `G = 1.0`
+* Random seed: `42`
+* Numerical integration method: explicit Euler
+
+Three problem sizes were evaluated:
+
+* **n = 1000, steps = 50**
+* **n = 2000, steps = 50**
+* **n = 4000, steps = 20**
+
+For each configuration, the best execution time out of three runs was recorded. Correctness was verified using a checksum computed from the final positions and velocities.
+
+
+### Sequential and thread-based performance
+
+The sequential implementation serves as the baseline. The thread-based implementation was evaluated using 1, 2, 4, and 8 threads.
+
+#### Results (best execution time, seconds)
+
+**n = 2000, steps = 50**
+
+| Implementation | Workers | Time (s) | Speedup |
+| -------------- | ------- | -------- | ------- |
+| Sequential     | 1       | 6.923    | 1.00×   |
+| Threads        | 1       | 5.696    | 1.22×   |
+| Threads        | 2       | 2.970    | 2.33×   |
+| Threads        | 4       | 1.537    | 4.50×   |
+| Threads        | 8       | 0.792    | 8.74×   |
+
+Similar near-linear scaling behavior was observed for the other problem sizes.
+
+#### Observations
+
+* The thread-based implementation achieves **almost linear speedup** up to 8 threads.
+* Minor super-linear speedups are observed in some cases, likely due to cache effects and reduced memory pressure.
+* Checksums are identical between sequential and threaded runs, confirming numerical consistency.
+
+
+### MPI-based performance
+
+The MPI implementation was evaluated using 1, 2, and 4 processes. Each MPI process handled a disjoint subset of bodies, and position data was exchanged at every simulation step using collective communication.
+
+#### Results (best execution time, seconds)
+
+**n = 2000, steps = 50**
+
+| Implementation | Processes | Time (s) | Speedup |
+| -------------- | --------- | -------- | ------- |
+| Sequential     | 1         | 6.923    | 1.00×   |
+| MPI            | 1         | 0.361    | 19.2×   |
+| MPI            | 2         | 0.188    | 36.8×   |
+| MPI            | 4         | 0.096    | 71.8×   |
+
+#### Observations
+
+* The MPI implementation significantly outperforms both sequential and thread-based versions for the tested problem sizes.
+* Increasing the number of MPI processes results in substantial reductions in execution time.
+* For small to medium problem sizes, communication overhead remains low compared to computation cost.
+
+
+### Numerical consistency
+
+For **MPI with one process**, the checksum exactly matches the sequential and threaded implementations, confirming correctness.
+
+For **MPI with multiple processes**, small differences in the checksum are observed. This behavior is expected and is caused by:
+
+* differences in the order of floating-point operations across processes,
+* non-associativity of floating-point arithmetic.
+
+The observed checksum drift increases with the number of processes but remains within acceptable numerical limits and does not indicate incorrect physical behavior.
+
