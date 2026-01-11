@@ -7,7 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <algorithm>
-
+#include <functional>
 #include "nbody.h"
 
 #ifdef USE_MPI
@@ -119,6 +119,7 @@ int main(int argc, char** argv) {
                 << "Usage:\n"
                 << "  " << argv[0] << " bench         # runs seq + threads benchmark suite\n"
                 << "  " << argv[0] << " bench_mpi     # runs MPI benchmark suite (launch with mpirun)\n"
+                << "  " << argv[0] << " bench_opencl  # runs OpenCL benchmark suite\n"
                 << "  " << argv[0] << " seq <n> <steps> [dt eps G seed]\n"
                 << "  " << argv[0] << " threads <n> <steps> <numThreads> [dt eps G seed]\n"
 #ifdef USE_MPI
@@ -218,6 +219,46 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // -------------------- BENCH: OpenCL --------------------
+    if (cmd == "bench_opencl") {
+        if (rank != 0) {
+#ifdef USE_MPI
+            MPI_Finalize();
+#endif
+            return 0;
+        }
+
+        std::cout << "Running OpenCL benchmark suite...\n";
+        for (const auto& tc : tests) {
+            int n = tc.n, steps = tc.steps;
+
+            std::vector<double> mass0;
+            std::vector<Vec3> pos0, vel0;
+            initBodies(n, mass0, pos0, vel0, seed);
+
+            auto mass = mass0;
+            auto pos = pos0;
+            auto vel = vel0;
+
+            double best = runBestOfRepeats(repeats, [&]() {
+                pos = pos0; vel = vel0;
+                simulateOpenCL(n, steps, mass, pos, vel, G, dt, eps);
+            });
+
+            double ck = checksumState(mass, pos, vel);
+            std::cout << "opencl  n=" << n << " steps=" << steps
+                      << " best=" << best << "s"
+                      << " checksum=" << ck << "\n";
+            appendCsvRow(csvPath, "opencl", 1, n, steps, dt, eps, G, seed, repeats, best, ck);
+        }
+
+        std::cout << "Saved results to " << csvPath << "\n";
+#ifdef USE_MPI
+        MPI_Finalize();
+#endif
+        return 0;
+    }
+
     // -------------------- BENCH: MPI --------------------
     // IMPORTANT: this must be launched with mpirun -np <P> ./Project bench_mpi
     if (cmd == "bench_mpi") {
@@ -279,7 +320,7 @@ int main(int argc, char** argv) {
     // Keep your old CLI if you still want it. (Not required for benchmarking.)
     if (rank == 0) {
         std::cerr << "Unknown command: " << cmd << "\n";
-        std::cerr << "Use: bench | bench_mpi\n";
+        std::cerr << "Use: bench | bench_mpi | bench_opencl\n";
     }
 
 #ifdef USE_MPI

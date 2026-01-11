@@ -46,4 +46,12 @@ void simulateMPI(
     MPI_Comm comm
 );
 
+void simulateOpenCL(
+    int n, int steps,
+    const std::vector<double>& mass,
+    std::vector<Vec3>& pos,
+    std::vector<Vec3>& vel,
+    double G, double dt, double epsilon
+);
+
 #endif //PROJECT_NBODY_H

@@ -13,8 +13,6 @@ The computational cost of the n-body problem grows quadratically with the number
 
 The sequential implementation of the n-body simulation serves as a baseline for correctness and performance comparison. The algorithm simulates the evolution of a system of bodies over a fixed number of discrete time steps.
 
-At each time step, the net force acting on each body is computed as the sum of the pairwise forces exerted by all other bodies. Based on this force, the body’s acceleration, velocity, and position are updated using a simple numerical integration method.
-
 To ensure correctness, the positions and velocities used for force computation are those from the beginning of the current time step. Updated values are stored in temporary arrays and applied only after all forces have been computed.
 
 #### Algorithm outline
@@ -189,4 +187,130 @@ For **MPI with multiple processes**, small differences in the checksum are obser
 * non-associativity of floating-point arithmetic.
 
 The observed checksum drift increases with the number of processes but remains within acceptable numerical limits and does not indicate incorrect physical behavior.
+
+
+## Parallel N-Body Simulation Algorithm (OpenCL-Based)
+
+The OpenCL-based implementation parallelizes the n-body simulation using GPU acceleration. OpenCL (Open Computing Language) is a framework for writing programs that execute across heterogeneous platforms, including GPUs, CPUs, and other processors.
+
+In this implementation, the entire force computation and position update for all bodies is offloaded to the GPU. Each GPU work-item (thread) is responsible for computing the forces acting on a single body and updating its velocity and position.
+
+### Algorithm outline
+
+1. Transfer initial mass, position, and velocity data from host (CPU) to device (GPU) memory.
+2. For each simulation step:
+   * Launch a kernel where each work-item computes forces for one body.
+   * Use local memory tiling to reduce global memory access latency.
+   * Update velocities and compute new positions.
+   * Swap position buffers on the GPU (no data transfer back to CPU).
+3. After all steps complete, transfer final positions and velocities back to host memory.
+
+### GPU Kernel Design
+
+The kernel uses a **tiled algorithm** with local memory optimization:
+
+* Work-items are organized into work-groups of size 128 (WG = 128).
+* Each work-group cooperatively loads a tile of body data into fast local (shared) memory.
+* All work-items in the group then compute interactions with the bodies in the tile.
+* This process repeats for all tiles, accumulating forces.
+* Barriers (`barrier(CLK_LOCAL_MEM_FENCE)`) synchronize work-items within a group between loading and computing phases.
+
+This tiling approach significantly reduces global memory bandwidth requirements by reusing loaded data across multiple work-items.
+
+### Memory Management
+
+To minimize host-device transfer overhead:
+
+* Data is uploaded to the GPU **once** at the beginning of the simulation.
+* Between simulation steps, position buffers are **swapped on the GPU** using buffer handle exchanges.
+* Data is downloaded from the GPU **once** at the end of the simulation.
+
+This approach eliminates the per-step transfer overhead that would otherwise dominate execution time for iterative simulations.
+
+### Precision Considerations
+
+The OpenCL implementation uses **single-precision floating-point (float)** arithmetic instead of double-precision for performance reasons:
+
+* GPUs typically have significantly higher throughput for 32-bit operations.
+* The `rsqrt()` function provides fast inverse square root computation.
+* Single precision is sufficient for visualization and many simulation purposes.
+
+As a result, checksums differ slightly from the double-precision CPU implementations.
+
+### Complexity
+
+The computational complexity per simulation step remains **O(n²)**, as all pairwise interactions are computed. However, the GPU executes thousands of work-items in parallel, with the tiling strategy ensuring efficient memory access patterns. For large n, the GPU can achieve orders of magnitude higher throughput than CPU implementations.
+
+---
+
+## Synchronization in the OpenCL-Based Parallel Implementation
+
+The OpenCL implementation uses a hierarchical synchronization model appropriate for GPU execution:
+
+### Intra-work-group synchronization
+
+Within each work-group, work-items must coordinate when accessing local memory. The `barrier(CLK_LOCAL_MEM_FENCE)` function is used to ensure that:
+
+1. All work-items have finished writing body data to local memory before any work-item begins reading.
+2. All work-items have finished computing with the current tile before loading the next tile.
+
+These barriers are placed at tile boundaries in the force computation loop.
+
+### Inter-work-group synchronization
+
+Work-groups execute independently and do not synchronize with each other during kernel execution. This is acceptable because:
+
+* Each work-item updates only one body.
+* Position reads use the snapshot from the beginning of the step.
+* New positions are written to a separate output buffer.
+
+### Host-device synchronization
+
+The host (CPU) waits for GPU completion using:
+
+* `clctx.queue.finish()` — blocks until all enqueued commands complete.
+* Synchronous buffer operations (`CL_TRUE` flag) — ensure data transfers complete before returning.
+
+### Buffer swapping
+
+Between simulation steps, position buffers are swapped by exchanging buffer handles on the host side (`std::swap`). This is a metadata operation that does not involve data movement and incurs negligible overhead.
+
+
+### OpenCL-based performance
+
+The OpenCL implementation was evaluated on an NVIDIA GPU using the CUDA OpenCL runtime. The implementation uses single-precision floating-point arithmetic and a work-group size of 128.
+
+#### Results (best execution time, seconds)
+
+| n    | steps | Sequential | Threads (8) | MPI (4) | OpenCL  | OpenCL Speedup vs Seq |
+| ---- | ----- | ---------- | ----------- | ------- | ------- | --------------------- |
+| 1000 | 50    | 0.214      | 0.054       | 0.061   | 0.114   | 1.88×                 |
+| 2000 | 50    | 0.858      | 0.158       | 0.220   | 0.114   | 7.53×                 |
+| 4000 | 20    | 1.368      | 0.333       | 0.355   | 0.110   | 12.44×                |
+
+#### Observations
+
+* The OpenCL implementation shows **near-constant execution time** across different problem sizes, demonstrating excellent GPU scalability.
+* For small n (1000), CPU-based parallelization (threads/MPI) outperforms OpenCL due to GPU kernel launch and initialization overhead.
+* For larger n (2000+), OpenCL significantly outperforms all CPU implementations, achieving up to **12× speedup** over sequential execution.
+* The GPU's massive parallelism effectively hides the O(n²) computational complexity for the tested problem sizes.
+
+#### Comparison of all implementations (n = 4000, steps = 20)
+
+| Implementation | Time (s) | Speedup vs Sequential |
+| -------------- | -------- | --------------------- |
+| Sequential     | 1.368    | 1.00×                 |
+| Threads (8)    | 0.333    | 4.11×                 |
+| MPI (4)        | 0.355    | 3.85×                 |
+| **OpenCL**     | **0.110**| **12.44×**            |
+
+### Numerical consistency (OpenCL)
+
+The OpenCL implementation produces different checksums compared to CPU implementations due to:
+
+* **Single-precision arithmetic**: The GPU kernel uses 32-bit floats instead of 64-bit doubles.
+* **Different operation ordering**: GPU parallel execution may accumulate forces in a different order.
+* **Fast math functions**: The `rsqrt()` function may use hardware approximations.
+
+These differences are expected and acceptable for simulation purposes. The physical behavior of the simulation remains correct, and the checksums are consistent across repeated OpenCL runs.
 
